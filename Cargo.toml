@@ -1,0 +1,7 @@
+[package]
+name = "tchtest"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tch = { version = "0.16.0", features = ["clap", "download-libtorch", "image"] }
