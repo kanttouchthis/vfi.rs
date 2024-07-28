@@ -1,7 +1,11 @@
 [package]
-name = "tchtest"
+name = "vfi-rs"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tch = { version = "0.16.0", features = ["clap", "download-libtorch", "image"] }
+clap = { version = "4.5.11", features = ["derive"] }
+indicatif = "0.17.8"
+serde = { version = "1.0.204", features = ["derive"] }
+serde_json = "1.0.120"
+tch = { git = "https://github.com/LaurentMazare/tch-rs", version = "0.17.0" }

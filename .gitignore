@@ -1,1 +1,10 @@
 /target
+.vscode
+*.pkl
+*.safetensors
+*.png
+*.jpeg
+*.jpg
+*.mp4
+*.temp
+*.aac

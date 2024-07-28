@@ -1,4 +1,5 @@
-use tch::{nn, Tensor};
+use super::util;
+use tch::{nn, Device, Kind, Tensor};
 
 pub fn warp(ten_input: &Tensor, ten_flow: &Tensor) -> Tensor {
     let (batch_size, _, height, width) = (
@@ -20,8 +21,8 @@ pub fn warp(ten_input: &Tensor, ten_flow: &Tensor) -> Tensor {
 
     let mut grid = Tensor::cat(&[ten_horizontal, ten_vertical], 1);
 
-    let flow_x = ten_flow.slice(1, 0, 1, 1) / ((width as f64 - 1.0) / 2.0);
-    let flow_y = ten_flow.slice(1, 1, 2, 1) / ((height as f64 - 1.0) / 2.0);
+    let flow_x = ten_flow.narrow(1, 0, 1) / ((width as f64 - 1.0) / 2.0);
+    let flow_y = ten_flow.narrow(1, 1, 1) / ((height as f64 - 1.0) / 2.0);
     grid += Tensor::cat(&[flow_x, flow_y], 1);
 
     grid = grid.permute([0, 2, 3, 1]);
@@ -34,16 +35,16 @@ fn conv2d_prelu(vs: &nn::Path, i: i64, o: i64, k: i64, stride: i64) -> nn::Seque
         padding: 1,
         ..Default::default()
     };
-    let prelu_weight = vs.ones("prekz", &[o]);
+    let prelu_weight = (vs / "1").ones("weight", &[o]);
     nn::seq()
-        .add(nn::conv2d(vs / "conv", i, o, k, config))
+        .add(nn::conv2d(vs / "0", i, o, k, config))
         .add_fn(move |xs: &Tensor| xs.prelu(&prelu_weight))
 }
 
 fn double_conv2d_prelu(vs: &nn::Path, i: i64, o: i64, k: i64) -> nn::Sequential {
     nn::seq()
-        .add(conv2d_prelu(vs, i, o, k, 2))
-        .add(conv2d_prelu(vs, o, o, k, 1))
+        .add(conv2d_prelu(&(vs / "conv1"), i, o, k, 2))
+        .add(conv2d_prelu(&(vs / "conv2"), o, o, k, 1))
 }
 
 fn deconv2d(vs: &nn::Path, i: i64, o: i64) -> nn::Sequential {
@@ -52,37 +53,41 @@ fn deconv2d(vs: &nn::Path, i: i64, o: i64) -> nn::Sequential {
         padding: 1,
         ..Default::default()
     };
-    nn::seq().add(nn::conv_transpose2d(vs / "convt2d", i, o, 4, config))
+    let prelu_weight = (vs / "1").ones("weight", &[o]);
+
+    nn::seq()
+        .add(nn::conv_transpose2d(&(vs / "0"), i, o, 4, config))
+        .add_fn(move |xs: &Tensor| xs.prelu(&prelu_weight))
 }
-#[derive(Debug)]
-struct IFBlock {
+
+pub struct IFBlock {
     conv0: nn::Sequential,
     convblock: nn::Sequential,
     lastconv: nn::ConvTranspose2D,
 }
 
 impl IFBlock {
-    fn new(vs: &nn::Path, i: i64, c: i64) -> IFBlock {
+    pub fn new(vs: &nn::Path, i: i64, c: i64) -> IFBlock {
         let conv0 = nn::seq()
-            .add(conv2d_prelu(vs, i, c / 2, 3, 2))
-            .add(conv2d_prelu(vs, c / 2, c, 3, 2));
+            .add(conv2d_prelu(&(vs / "conv0" / "0"), i, c / 2, 3, 2))
+            .add(conv2d_prelu(&(vs / "conv0" / "1"), c / 2, c, 3, 2));
 
         let convblock = nn::seq()
-            .add(conv2d_prelu(vs, c, c, 3, 1))
-            .add(conv2d_prelu(vs, c, c, 3, 1))
-            .add(conv2d_prelu(vs, c, c, 3, 1))
-            .add(conv2d_prelu(vs, c, c, 3, 1))
-            .add(conv2d_prelu(vs, c, c, 3, 1))
-            .add(conv2d_prelu(vs, c, c, 3, 1))
-            .add(conv2d_prelu(vs, c, c, 3, 1))
-            .add(conv2d_prelu(vs, c, c, 3, 1));
+            .add(conv2d_prelu(&(vs / "convblock" / "0"), c, c, 3, 1))
+            .add(conv2d_prelu(&(vs / "convblock" / "1"), c, c, 3, 1))
+            .add(conv2d_prelu(&(vs / "convblock" / "2"), c, c, 3, 1))
+            .add(conv2d_prelu(&(vs / "convblock" / "3"), c, c, 3, 1))
+            .add(conv2d_prelu(&(vs / "convblock" / "4"), c, c, 3, 1))
+            .add(conv2d_prelu(&(vs / "convblock" / "5"), c, c, 3, 1))
+            .add(conv2d_prelu(&(vs / "convblock" / "6"), c, c, 3, 1))
+            .add(conv2d_prelu(&(vs / "convblock" / "7"), c, c, 3, 1));
 
         let lastconv_config = nn::ConvTransposeConfig {
             stride: 2,
             padding: 1,
             ..Default::default()
         };
-        let lastconv = nn::conv_transpose2d(vs, c, 5, 4, lastconv_config);
+        let lastconv = nn::conv_transpose2d(&(vs / "lastconv"), c, 5, 4, lastconv_config);
 
         IFBlock {
             conv0,
@@ -90,7 +95,13 @@ impl IFBlock {
             lastconv,
         }
     }
-    fn forward(&self, xs: &Tensor, flow: Option<&Tensor>, scale: Option<f64>) -> (Tensor, Tensor) {
+
+    pub fn forward(
+        &self,
+        xs: &Tensor,
+        flow: Option<&Tensor>,
+        scale: Option<f64>,
+    ) -> (Tensor, Tensor) {
         let scale: f64 = match scale {
             Some(v) => v,
             None => 1.0f64,
@@ -115,7 +126,7 @@ impl IFBlock {
                         false,
                         None,
                         None,
-                    ),
+                    ) / scale,
                 ],
                 1,
             ),
@@ -125,12 +136,20 @@ impl IFBlock {
         xs = xs.apply(&self.conv0);
         xs = xs.apply(&self.convblock) + xs;
         xs = xs.apply(&self.lastconv);
-        xs = xs.upsample_bilinear2d(&[xs.size()[2] * 2, xs.size()[3] * 2], false, None, None);
-        (xs.narrow(1, 0, 4) * 2.0, xs.narrow(1, 4, 1))
+        xs = xs.upsample_bilinear2d(
+            &[
+                xs.size()[2] * (scale as i64) * 2,
+                xs.size()[3] * (scale as i64) * 2,
+            ],
+            false,
+            None,
+            None,
+        );
+        (xs.narrow(1, 0, 4) * scale * 2.0, xs.narrow(1, 4, 1))
     }
 }
 
-struct ContextNet {
+pub struct ContextNet {
     conv0: nn::Sequential,
     conv1: nn::Sequential,
     conv2: nn::Sequential,
@@ -138,11 +157,11 @@ struct ContextNet {
 }
 
 impl ContextNet {
-    fn new(vs: &nn::Path, c: i64) -> ContextNet {
-        let conv0 = double_conv2d_prelu(vs, 3, c, 3);
-        let conv1 = double_conv2d_prelu(vs, c, c * 2, 3);
-        let conv2 = double_conv2d_prelu(vs, c * 2, c * 4, 3);
-        let conv3 = double_conv2d_prelu(vs, c * 4, c * 8, 3);
+    pub fn new(vs: &nn::Path, c: i64) -> ContextNet {
+        let conv0 = double_conv2d_prelu(&(vs / "conv1"), 3, c, 3);
+        let conv1 = double_conv2d_prelu(&(vs / "conv2"), c, c * 2, 3);
+        let conv2 = double_conv2d_prelu(&(vs / "conv3"), c * 2, c * 4, 3);
+        let conv3 = double_conv2d_prelu(&(vs / "conv4"), c * 4, c * 8, 3);
         ContextNet {
             conv0,
             conv1,
@@ -150,7 +169,8 @@ impl ContextNet {
             conv3,
         }
     }
-    fn forward(&self, xs: &Tensor, flow: &Tensor) -> (Tensor, Tensor, Tensor, Tensor) {
+
+    pub fn forward(&self, xs: &Tensor, flow: &Tensor) -> (Tensor, Tensor, Tensor, Tensor) {
         let mut xs = xs.apply(&self.conv0);
         let mut flow = flow.upsample_bilinear2d(
             &[flow.size()[2] / 2 as i64, flow.size()[3] / 2 as i64],
@@ -191,7 +211,7 @@ impl ContextNet {
     }
 }
 
-struct Unet {
+pub struct Unet {
     down0: nn::Sequential,
     down1: nn::Sequential,
     down2: nn::Sequential,
@@ -204,23 +224,23 @@ struct Unet {
 }
 
 impl Unet {
-    fn new(vs: &nn::Path, c: i64) -> Unet {
-        let down0 = double_conv2d_prelu(vs, 17, c * 2, 3);
-        let down1 = double_conv2d_prelu(vs, c * 4, c * 4, 3);
-        let down2 = double_conv2d_prelu(vs, c * 8, c * 8, 3);
-        let down3 = double_conv2d_prelu(vs, c * 16, c * 16, 3);
+    pub fn new(vs: &nn::Path, c: i64) -> Unet {
+        let down0 = double_conv2d_prelu(&(vs / "down0"), 17, c * 2, 3);
+        let down1 = double_conv2d_prelu(&(vs / "down1"), c * 4, c * 4, 3);
+        let down2 = double_conv2d_prelu(&(vs / "down2"), c * 8, c * 8, 3);
+        let down3 = double_conv2d_prelu(&(vs / "down3"), c * 16, c * 16, 3);
 
-        let up0 = deconv2d(vs, c * 32, c * 8);
-        let up1 = deconv2d(vs, c * 16, c * 4);
-        let up2 = deconv2d(vs, c * 8, c * 2);
-        let up3 = deconv2d(vs, c * 4, c);
+        let up0 = deconv2d(&(vs / "up0"), c * 32, c * 8);
+        let up1 = deconv2d(&(vs / "up1"), c * 16, c * 4);
+        let up2 = deconv2d(&(vs / "up2"), c * 8, c * 2);
+        let up3 = deconv2d(&(vs / "up3"), c * 4, c);
 
         let config = nn::ConvConfig {
             stride: 1,
             padding: 1,
             ..Default::default()
         };
-        let conv = nn::conv2d(vs, c, 3, 3, config);
+        let conv = nn::conv2d(&(vs / "conv"), c, 3, 3, config);
 
         Unet {
             down0,
@@ -234,11 +254,12 @@ impl Unet {
             conv,
         }
     }
-    fn forward(
+
+    pub fn forward(
         &self,
         img0: &Tensor,
         img1: &Tensor,
-        warped_im0: &Tensor,
+        warped_img0: &Tensor,
         warped_img1: &Tensor,
         mask: &Tensor,
         flow: &Tensor,
@@ -246,7 +267,7 @@ impl Unet {
         c1: (Tensor, Tensor, Tensor, Tensor),
     ) -> Tensor {
         let s0 =
-            Tensor::cat(&[img0, img1, warped_im0, warped_img1, mask, flow], 1).apply(&self.down0);
+            Tensor::cat(&[img0, img1, warped_img0, warped_img1, mask, flow], 1).apply(&self.down0);
         let s1 = Tensor::cat(&[s0.copy(), c0.0, c1.0], 1).apply(&self.down1);
         let s2 = Tensor::cat(&[s1.copy(), c0.1, c1.1], 1).apply(&self.down2);
         let s3 = Tensor::cat(&[s2.copy(), c0.2, c1.2], 1).apply(&self.down3);
@@ -261,7 +282,7 @@ impl Unet {
     }
 }
 
-struct IFNetsdi {
+pub struct IFNetsdi {
     block0: IFBlock,
     block1: IFBlock,
     block2: IFBlock,
@@ -270,11 +291,149 @@ struct IFNetsdi {
 }
 
 impl IFNetsdi {
-    fn new(vs: &nn::Path) {
-        let block0 = IFBlock::new(vs, 11, 240);
-        let block1 = IFBlock::new(vs, 22, 150);
-        let block2 = IFBlock::new(vs, 22, 90);
-        let contextnet = ContextNet::new(vs, 16);
-        let unet = Unet::new(vs, 16);
+    pub fn new(vs: &nn::Path) -> IFNetsdi {
+        let vs = &(vs / "module");
+        let block0 = IFBlock::new(&(vs / "block0"), 11, 240);
+        let block1 = IFBlock::new(&(vs / "block1"), 22, 150);
+        let block2 = IFBlock::new(&(vs / "block2"), 22, 90);
+        let contextnet = ContextNet::new(&(vs / "contextnet"), 16);
+        let unet = Unet::new(&(vs / "unet"), 16);
+
+        IFNetsdi {
+            block0,
+            block1,
+            block2,
+            contextnet,
+            unet,
+        }
+    }
+
+    pub fn load(path: &str, kind: Kind, device: Device) -> Self {
+        let mut vs = nn::VarStore::new(device);
+        let model = IFNetsdi::new(&(vs.root()));
+        vs.load(path).unwrap();
+        vs.set_kind(kind);
+        model
+    }
+
+    pub fn forward(
+        &self,
+        img0: &Tensor,
+        img1: &Tensor,
+        sdi_map: &Tensor,
+        scales: &[f64],
+    ) -> Tensor {
+        // Iteration 0
+        let (mut flow, mut mask) = self.block0.forward(
+            &Tensor::cat(&[img0, img1, sdi_map], 1),
+            None,
+            Some(scales[0]),
+        );
+
+        let mut warped_img0 = warp(img0, &flow.narrow(1, 0, 2));
+        let mut warped_img1 = warp(img1, &flow.narrow(1, 2, 2));
+
+        // Iteration 1
+        let (_flow, _mask) = self.block1.forward(
+            &Tensor::cat(&[img0, img1, sdi_map, &warped_img0, &warped_img1, &mask], 1),
+            Some(&flow),
+            Some(scales[1]),
+        );
+
+        flow += _flow;
+        mask += _mask;
+
+        warped_img0 = warp(img0, &flow.narrow(1, 0, 2));
+        warped_img1 = warp(img1, &flow.narrow(1, 2, 2));
+
+        // Iteration 2
+        let (_flow, _mask) = self.block2.forward(
+            &Tensor::cat(&[img0, img1, sdi_map, &warped_img0, &warped_img1, &mask], 1),
+            Some(&flow),
+            Some(scales[2]),
+        );
+
+        flow += _flow;
+        mask += _mask;
+
+        warped_img0 = warp(img0, &flow.narrow(1, 0, 2));
+        warped_img1 = warp(img1, &flow.narrow(1, 2, 2));
+
+        let mut merged: Tensor = &warped_img0 * &mask + &warped_img1 * (1.0 - &mask);
+
+        let c0 = self.contextnet.forward(img0, &flow.narrow(1, 0, 2));
+        let c1 = self.contextnet.forward(img1, &flow.narrow(1, 2, 2));
+
+        let mut res =
+            self.unet
+                .forward(img0, img1, &warped_img0, &warped_img1, &mask, &flow, c0, c1);
+
+        res = res.narrow(1, 0, 3) * 2.0 - 1.0;
+
+        merged = merged + res;
+
+        merged.clamp(0.0, 1.0)
+    }
+
+    fn _inference(
+        &self,
+        img0: &Tensor,
+        img1: &Tensor,
+        sdi_map: &Tensor,
+        iters: i64,
+        scales: &[f64],
+    ) -> Tensor {
+        let iters = match iters {
+            0 => 1,
+            _ => iters,
+        };
+
+        let mut img_cur = img0.copy();
+        let mut _sdi_map = sdi_map.copy();
+
+        for i in 0..iters {
+            let v1 = ((i as f64) + 1.0f64) / (iters as f64);
+            let v2 = (i as f64) / (iters as f64);
+            _sdi_map = Tensor::cat(&[sdi_map * v1, sdi_map * v2, img_cur], 1);
+            img_cur = self.forward(img0, img1, &_sdi_map, scales);
+        }
+
+        img_cur
+    }
+
+    pub fn inference(
+        &self,
+        img0: &Tensor,
+        img1: &Tensor,
+        num: i64,
+        iters: i64,
+        scales: Option<&[f64]>,
+        kind: tch::Kind,
+        device: tch::Device,
+    ) -> Vec<Tensor> {
+        let img0 = util::preprocess(img0, kind, device, true);
+        let img1 = util::preprocess(img1, kind, device, true);
+
+        let scale = match scales {
+            Some(scale) => scale,
+            None => &[4.0, 2.0, 1.0],
+        };
+
+        let (h, w) = (img0.size()[2], img0.size()[3]);
+        let (kind, device) = (img0.kind(), img1.device());
+
+        let mut sdi_maps: Vec<Tensor> = Vec::new();
+
+        for i in 1..num + 1 {
+            let v = (i as f64) / ((num as f64) + 1.0f64);
+            sdi_maps.push(Tensor::full(&[1, 1, h, w], v, (kind, device)));
+        }
+
+        let mut results: Vec<Tensor> = Vec::new();
+        for sdi_map in sdi_maps {
+            results.push(self._inference(&img0, &img1, &sdi_map, iters, scale));
+        }
+
+        results
     }
 }
