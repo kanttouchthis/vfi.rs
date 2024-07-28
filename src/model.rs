@@ -1,7 +1,4 @@
-use tch::{
-    nn,
-    Tensor,
-};
+use tch::{nn, Tensor};
 
 pub fn warp(ten_input: &Tensor, ten_flow: &Tensor) -> Tensor {
     let (batch_size, _, height, width) = (
@@ -49,14 +46,13 @@ fn double_conv2d_prelu(vs: &nn::Path, i: i64, o: i64, k: i64) -> nn::Sequential 
         .add(conv2d_prelu(vs, o, o, k, 1))
 }
 
-fn deconv2d(vs: &nn::Path, i: i64, o: i64) -> nn::Sequential{
+fn deconv2d(vs: &nn::Path, i: i64, o: i64) -> nn::Sequential {
     let config = nn::ConvTransposeConfig {
         stride: 2,
         padding: 1,
         ..Default::default()
     };
-    nn::seq()
-        .add(nn::conv_transpose2d(vs / "convt2d", i, o, 4, config))
+    nn::seq().add(nn::conv_transpose2d(vs / "convt2d", i, o, 4, config))
 }
 #[derive(Debug)]
 struct IFBlock {
@@ -82,8 +78,8 @@ impl IFBlock {
             .add(conv2d_prelu(vs, c, c, 3, 1));
 
         let lastconv_config = nn::ConvTransposeConfig {
-            stride:2,
-            padding:1,
+            stride: 2,
+            padding: 1,
             ..Default::default()
         };
         let lastconv = nn::conv_transpose2d(vs, c, 5, 4, lastconv_config);
@@ -249,20 +245,18 @@ impl Unet {
         c0: (Tensor, Tensor, Tensor, Tensor),
         c1: (Tensor, Tensor, Tensor, Tensor),
     ) -> Tensor {
-        let s0 = Tensor::cat(
-            &[img0, img1, warped_im0, warped_img1, mask, flow],
-            1,
-        ).apply(&self.down0);
+        let s0 =
+            Tensor::cat(&[img0, img1, warped_im0, warped_img1, mask, flow], 1).apply(&self.down0);
         let s1 = Tensor::cat(&[s0.copy(), c0.0, c1.0], 1).apply(&self.down1);
         let s2 = Tensor::cat(&[s1.copy(), c0.1, c1.1], 1).apply(&self.down2);
         let s3 = Tensor::cat(&[s2.copy(), c0.2, c1.2], 1).apply(&self.down3);
         let mut xs = Tensor::cat(&[s3, c0.3, c1.3], 1).apply(&self.up0);
-        
+
         xs = Tensor::cat(&[xs, s2], 1).apply(&self.up1);
         xs = Tensor::cat(&[xs, s1], 1).apply(&self.up2);
         xs = Tensor::cat(&[xs, s0], 1).apply(&self.up3);
         xs = xs.apply(&self.conv);
-        
+
         xs.sigmoid()
     }
 }
