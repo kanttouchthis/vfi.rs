@@ -126,6 +126,7 @@ pub fn inference_video(
     output: &str,
     factor: i64,
     iters: i64,
+    batch_size: i64,
     kind: Kind,
     device: Device,
     vcodec: &str,
@@ -133,6 +134,7 @@ pub fn inference_video(
     keep_audio: bool,
 ) {
     let num = factor - 1;
+    let mut bs = batch_size;
     let (fps, width, height, nb_frames) = get_video_info(input).unwrap();
     let temp = output.to_owned() + ".temp";
     let scale = format!("{}x{}", width, height);
@@ -220,6 +222,7 @@ pub fn inference_video(
 
     let mut buffer = vec![0u8; framesize];
     let mut output_buffer;
+    let mut lastbuffer = vec![vec![0u8; framesize]];
 
     reader
         .read_exact(&mut buffer)
@@ -236,26 +239,65 @@ pub fn inference_video(
         .expect("Failed to write buffer to ffmpeg");
     bar.inc(1);
 
-    while let Ok(_) = reader.read_exact(&mut buffer) {
-        next = buffer_to_tensor(&buffer, width, height, kind, device);
+    let mut img0s: Vec<Tensor> = Vec::new();
+    let mut img1s: Vec<Tensor> = Vec::new();
+    let mut breaknext = false;
+    'outer: loop {
+        for i in 0..bs {
+            let read = reader.read_exact(&mut buffer);
+            match read {
+                Ok(_) => (),
+                Err(_) => breaknext = true,
+            };
+            if breaknext {
+                if i == 0 {
+                    break 'outer;
+                }
+                bs = i;
+                break;
+            }
+            next = buffer_to_tensor(&buffer, width, height, kind, device);
+            img0s.push(last);
+            img1s.push(next.copy());
+            last = next;
+            lastbuffer.push(buffer.clone());
+        }
 
-        results = model.inference(&last, &next, num, iters, None, kind, device);
+        results = model.inference(
+            &Tensor::cat(&img0s, 0),
+            &Tensor::cat(&img1s, 0),
+            num,
+            iters,
+            None,
+            kind,
+            device,
+        );
 
-        for mut result in results {
-            result = postprocess(&result, false).permute([1, 2, 0]);
-            output_buffer = Vec::<u8>::try_from(result.flatten(0, -1))
-                .expect("Failed to convert tensor to vec");
+        for i in 0..bs {
+            for result in &results {
+                let _result = postprocess(&result.narrow(0, i, 1), false).permute([1, 2, 0]);
+                output_buffer = Vec::<u8>::try_from(_result.flatten(0, -1))
+                    .expect("Failed to convert tensor to vec");
+                writer
+                    .write_all(&output_buffer)
+                    .expect("Failed to write output_buffer to ffmpeg");
+
+                bar.inc(1);
+            }
             writer
-                .write_all(&output_buffer)
-                .expect("Failed to write output_buffer to ffmpeg");
+                .write_all(&lastbuffer.get(i as usize).unwrap())
+                .expect("Failed to write buffer to ffmpeg");
             bar.inc(1);
         }
-        writer
-            .write_all(&buffer)
-            .expect("Failed to write buffer to ffmpeg");
-        bar.inc(1);
-        last = next;
+        img0s.clear();
+        img1s.clear();
+        lastbuffer.clear();
+        if breaknext {
+            break;
+        }
     }
+
+    bar.finish();
 
     writer.flush().expect("Failed to flush writer");
     drop(writer);

@@ -22,6 +22,8 @@ struct Args {
     factor: i64,
     #[arg(long, default_value = "2")]
     iters: i64,
+    #[arg(long, default_value = "4")]
+    batch_size: i64,
     #[arg(long, default_value = "hevc_nvenc")]
     vcodec: String,
     #[arg(long, default_value = "4M")]
@@ -56,6 +58,7 @@ fn main() {
         args.output.as_ref(),
         args.factor,
         args.iters,
+        args.batch_size,
         kind,
         device,
         &args.vcodec,

@@ -2,12 +2,7 @@ use super::util;
 use tch::{nn, Device, Kind, Tensor};
 
 pub fn warp(ten_input: &Tensor, ten_flow: &Tensor) -> Tensor {
-    let (batch_size, _, height, width) = (
-        ten_flow.size()[0],
-        ten_flow.size()[1],
-        ten_flow.size()[2],
-        ten_flow.size()[3],
-    );
+    let (batch_size, height, width) = (ten_flow.size()[0], ten_flow.size()[2], ten_flow.size()[3]);
     let kind = ten_flow.kind();
     let device = ten_flow.device();
 
@@ -420,15 +415,14 @@ impl IFNetsdi {
             None => &[4.0, 2.0, 1.0],
         };
 
-
-        let (h, w) = (img0.size()[2], img0.size()[3]);
+        let (bs, h, w) = (img0.size()[0], img0.size()[2], img0.size()[3]);
         let (kind, device) = (img0.kind(), img1.device());
 
         let mut sdi_maps: Vec<Tensor> = Vec::new();
 
         for i in 1..num + 1 {
             let v = (i as f64) / ((num as f64) + 1.0f64);
-            sdi_maps.push(Tensor::full(&[1, 1, h, w], v, (kind, device)));
+            sdi_maps.push(Tensor::full(&[bs, 1, h, w], v, (kind, device)));
         }
 
         let mut results: Vec<Tensor> = Vec::new();
