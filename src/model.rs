@@ -108,7 +108,7 @@ impl IFBlock {
         };
 
         let mut xs = match scale {
-            1.0f64 => xs.copy(),
+            1.0f64 => xs.shallow_clone(),
             _ => xs.upsample_bilinear2d(
                 &[xs.size()[2] / scale as i64, xs.size()[3] / scale as i64],
                 false,
@@ -268,9 +268,9 @@ impl Unet {
     ) -> Tensor {
         let s0 =
             Tensor::cat(&[img0, img1, warped_img0, warped_img1, mask, flow], 1).apply(&self.down0);
-        let s1 = Tensor::cat(&[s0.copy(), c0.0, c1.0], 1).apply(&self.down1);
-        let s2 = Tensor::cat(&[s1.copy(), c0.1, c1.1], 1).apply(&self.down2);
-        let s3 = Tensor::cat(&[s2.copy(), c0.2, c1.2], 1).apply(&self.down3);
+        let s1 = Tensor::cat(&[s0.shallow_clone(), c0.0, c1.0], 1).apply(&self.down1);
+        let s2 = Tensor::cat(&[s1.shallow_clone(), c0.1, c1.1], 1).apply(&self.down2);
+        let s3 = Tensor::cat(&[s2.shallow_clone(), c0.2, c1.2], 1).apply(&self.down3);
         let mut xs = Tensor::cat(&[s3, c0.3, c1.3], 1).apply(&self.up0);
 
         xs = Tensor::cat(&[xs, s2], 1).apply(&self.up1);
@@ -388,8 +388,8 @@ impl IFNetsdi {
             _ => iters,
         };
 
-        let mut img_cur = img0.copy();
-        let mut _sdi_map = sdi_map.copy();
+        let mut img_cur = img0.shallow_clone();
+        let mut _sdi_map = sdi_map.shallow_clone();
 
         for i in 0..iters {
             let v1 = ((i as f64) + 1.0f64) / (iters as f64);
@@ -411,6 +411,7 @@ impl IFNetsdi {
         kind: tch::Kind,
         device: tch::Device,
     ) -> Vec<Tensor> {
+        let _guard = tch::no_grad_guard();
         let img0 = util::preprocess(img0, kind, device, true);
         let img1 = util::preprocess(img1, kind, device, true);
 
@@ -418,6 +419,7 @@ impl IFNetsdi {
             Some(scale) => scale,
             None => &[4.0, 2.0, 1.0],
         };
+
 
         let (h, w) = (img0.size()[2], img0.size()[3]);
         let (kind, device) = (img0.kind(), img1.device());
