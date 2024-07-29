@@ -164,6 +164,8 @@ pub fn inference_video(
     }
 
     let mut ffmpeg_read = Command::new("ffmpeg")
+        .arg("-hwaccel")
+        .arg("cuda")
         .arg("-i")
         .arg(input)
         .arg("-f")
